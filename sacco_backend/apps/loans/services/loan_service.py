@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Tuple
 
 from django.db import transaction
+from django.utils import timezone
 
 from apps.loans.models import Loan, LoanRepayment
 from apps.members.models import Member
@@ -26,18 +27,18 @@ class LoanService:
     @transaction.atomic
     def approve_loan(loan: Loan, approved_by):
         loan.status = 'APPROVED'
-        loan.approval_date = datetime.now()
+        loan.approval_date = timezone.now()
         loan.approved_by = approved_by
         loan.save()
 
-        NotificationService.send_loan_approval_notification(loan.member)
+        NotificationService.send_loan_approval_notification_sync(loan.member)
         return loan
 
     @staticmethod
     @transaction.atomic
     def disburse_loan(loan: Loan):
         loan.status = 'DISBURSED'
-        loan.disbursement_date = datetime.now()
+        loan.disbursement_date = timezone.now()
         loan.save()
 
         # Create repayment schedule
@@ -64,7 +65,7 @@ class LoanService:
                 penalty_amount=Decimal('0.00')
             )
 
-        NotificationService.send_loan_disbursement_notification(loan.member)
+        NotificationService.send_loan_disbursement_notification_sync(loan.member)
         return loan
 
     @staticmethod
