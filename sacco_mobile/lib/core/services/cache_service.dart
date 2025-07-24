@@ -1,1 +1,388 @@
-import 'dart:convert';\nimport 'dart:io';\n\nimport 'package:hive_flutter/hive_flutter.dart';\nimport 'package:injectable/injectable.dart';\nimport 'package:logger/logger.dart';\nimport 'package:path_provider/path_provider.dart';\n\nimport '../../app/app_config.dart';\n\n@lazySingleton\nclass CacheService {\n  final Logger _logger;\n  \n  late Box<String> _cacheBox;\n  late Box<String> _userDataBox;\n  late Box<String> _transactionCacheBox;\n  late Box<String> _settingsBox;\n  \n  bool _isInitialized = false;\n\n  CacheService(this._logger);\n\n  /// Initialize cache service\n  Future<void> initialize() async {\n    if (_isInitialized) return;\n\n    try {\n      // Initialize Hive if not already done\n      if (!Hive.isAdapterRegistered(0)) {\n        // Register any custom adapters here if needed\n      }\n\n      // Open cache boxes\n      _cacheBox = await Hive.openBox<String>('app_cache');\n      _userDataBox = await Hive.openBox<String>('user_data');\n      _transactionCacheBox = await Hive.openBox<String>('transaction_cache');\n      _settingsBox = await Hive.openBox<String>('app_settings');\n      \n      _isInitialized = true;\n      _logger.i('Cache service initialized successfully');\n      \n      // Clean up expired cache entries\n      await _cleanupExpiredEntries();\n      \n      // Check cache size and cleanup if needed\n      await _manageCacheSize();\n      \n    } catch (e) {\n      _logger.e('Error initializing cache service: $e');\n      rethrow;\n    }\n  }\n\n  /// Store data in cache with expiry\n  Future<void> put(\n    String key, \n    dynamic data, {\n    Duration? expiry,\n    CacheType type = CacheType.general,\n  }) async {\n    await _ensureInitialized();\n    \n    try {\n      final expiryTime = expiry ?? AppConfig.cacheExpiry;\n      final expirationTimestamp = DateTime.now().add(expiryTime).millisecondsSinceEpoch;\n      \n      final cacheEntry = CacheEntry(\n        data: data,\n        timestamp: DateTime.now().millisecondsSinceEpoch,\n        expirationTimestamp: expirationTimestamp,\n      );\n      \n      final box = _getBoxForType(type);\n      await box.put(key, jsonEncode(cacheEntry.toJson()));\n      \n      _logger.d('Cached data for key: $key (expires: ${DateTime.fromMillisecondsSinceEpoch(expirationTimestamp)})');\n    } catch (e) {\n      _logger.e('Error caching data for key $key: $e');\n    }\n  }\n\n  /// Get data from cache\n  Future<T?> get<T>(\n    String key, {\n    CacheType type = CacheType.general,\n    T Function(dynamic)? deserializer,\n  }) async {\n    await _ensureInitialized();\n    \n    try {\n      final box = _getBoxForType(type);\n      final cachedDataString = box.get(key);\n      \n      if (cachedDataString == null) {\n        _logger.d('No cached data found for key: $key');\n        return null;\n      }\n      \n      final cacheEntry = CacheEntry.fromJson(\n        jsonDecode(cachedDataString) as Map<String, dynamic>,\n      );\n      \n      // Check if cache entry has expired\n      if (DateTime.now().millisecondsSinceEpoch > cacheEntry.expirationTimestamp) {\n        _logger.d('Cache entry expired for key: $key');\n        await box.delete(key);\n        return null;\n      }\n      \n      _logger.d('Retrieved cached data for key: $key');\n      \n      // Use deserializer if provided, otherwise return data as is\n      if (deserializer != null) {\n        return deserializer(cacheEntry.data);\n      }\n      \n      return cacheEntry.data as T?;\n    } catch (e) {\n      _logger.e('Error getting cached data for key $key: $e');\n      return null;\n    }\n  }\n\n  /// Check if data exists in cache and is not expired\n  Future<bool> exists(\n    String key, {\n    CacheType type = CacheType.general,\n  }) async {\n    await _ensureInitialized();\n    \n    try {\n      final box = _getBoxForType(type);\n      final cachedDataString = box.get(key);\n      \n      if (cachedDataString == null) return false;\n      \n      final cacheEntry = CacheEntry.fromJson(\n        jsonDecode(cachedDataString) as Map<String, dynamic>,\n      );\n      \n      return DateTime.now().millisecondsSinceEpoch <= cacheEntry.expirationTimestamp;\n    } catch (e) {\n      _logger.e('Error checking cache existence for key $key: $e');\n      return false;\n    }\n  }\n\n  /// Remove data from cache\n  Future<void> remove(\n    String key, {\n    CacheType type = CacheType.general,\n  }) async {\n    await _ensureInitialized();\n    \n    try {\n      final box = _getBoxForType(type);\n      await box.delete(key);\n      _logger.d('Removed cached data for key: $key');\n    } catch (e) {\n      _logger.e('Error removing cached data for key $key: $e');\n    }\n  }\n\n  /// Clear all cache data\n  Future<void> clearAll({CacheType? type}) async {\n    await _ensureInitialized();\n    \n    try {\n      if (type != null) {\n        final box = _getBoxForType(type);\n        await box.clear();\n        _logger.i('Cleared all cache data for type: $type');\n      } else {\n        await _cacheBox.clear();\n        await _userDataBox.clear();\n        await _transactionCacheBox.clear();\n        // Don't clear settings box as it contains user preferences\n        _logger.i('Cleared all cache data');\n      }\n    } catch (e) {\n      _logger.e('Error clearing cache data: $e');\n    }\n  }\n\n  /// Get cache statistics\n  Future<CacheStats> getStats() async {\n    await _ensureInitialized();\n    \n    try {\n      final generalCount = _cacheBox.length;\n      final userDataCount = _userDataBox.length;\n      final transactionCount = _transactionCacheBox.length;\n      final settingsCount = _settingsBox.length;\n      \n      final totalEntries = generalCount + userDataCount + transactionCount + settingsCount;\n      \n      // Calculate approximate size\n      var totalSize = 0;\n      for (final box in [_cacheBox, _userDataBox, _transactionCacheBox, _settingsBox]) {\n        for (final key in box.keys) {\n          final value = box.get(key);\n          if (value != null) {\n            totalSize += value.length;\n          }\n        }\n      }\n      \n      return CacheStats(\n        totalEntries: totalEntries,\n        generalCacheEntries: generalCount,\n        userDataEntries: userDataCount,\n        transactionCacheEntries: transactionCount,\n        settingsEntries: settingsCount,\n        approximateSize: totalSize,\n      );\n    } catch (e) {\n      _logger.e('Error getting cache stats: $e');\n      return CacheStats.empty();\n    }\n  }\n\n  /// Clean up expired cache entries\n  Future<void> _cleanupExpiredEntries() async {\n    try {\n      final now = DateTime.now().millisecondsSinceEpoch;\n      var cleanedCount = 0;\n      \n      for (final box in [_cacheBox, _userDataBox, _transactionCacheBox]) {\n        final keysToRemove = <String>[];\n        \n        for (final key in box.keys) {\n          final cachedDataString = box.get(key);\n          if (cachedDataString != null) {\n            try {\n              final cacheEntry = CacheEntry.fromJson(\n                jsonDecode(cachedDataString) as Map<String, dynamic>,\n              );\n              \n              if (now > cacheEntry.expirationTimestamp) {\n                keysToRemove.add(key);\n              }\n            } catch (e) {\n              // If we can't parse the cache entry, remove it\n              keysToRemove.add(key);\n            }\n          }\n        }\n        \n        for (final key in keysToRemove) {\n          await box.delete(key);\n          cleanedCount++;\n        }\n      }\n      \n      if (cleanedCount > 0) {\n        _logger.i('Cleaned up $cleanedCount expired cache entries');\n      }\n    } catch (e) {\n      _logger.e('Error cleaning up expired cache entries: $e');\n    }\n  }\n\n  /// Manage cache size to stay within limits\n  Future<void> _manageCacheSize() async {\n    try {\n      final stats = await getStats();\n      \n      if (stats.approximateSize > AppConfig.maxCacheSize) {\n        _logger.w('Cache size (${stats.approximateSize}) exceeds limit (${AppConfig.maxCacheSize})');\n        \n        // Remove oldest entries from general cache first\n        await _removeOldestEntries(_cacheBox, stats.generalCacheEntries ~/ 4);\n        \n        // Then from transaction cache if still too large\n        final newStats = await getStats();\n        if (newStats.approximateSize > AppConfig.maxCacheSize) {\n          await _removeOldestEntries(_transactionCacheBox, stats.transactionCacheEntries ~/ 4);\n        }\n        \n        _logger.i('Cache cleanup completed');\n      }\n    } catch (e) {\n      _logger.e('Error managing cache size: $e');\n    }\n  }\n\n  /// Remove oldest entries from a box\n  Future<void> _removeOldestEntries(Box<String> box, int count) async {\n    try {\n      final entries = <MapEntry<String, int>>[];\n      \n      for (final key in box.keys) {\n        final cachedDataString = box.get(key);\n        if (cachedDataString != null) {\n          try {\n            final cacheEntry = CacheEntry.fromJson(\n              jsonDecode(cachedDataString) as Map<String, dynamic>,\n            );\n            entries.add(MapEntry(key, cacheEntry.timestamp));\n          } catch (e) {\n            // If we can't parse, consider it for removal\n            entries.add(MapEntry(key, 0));\n          }\n        }\n      }\n      \n      // Sort by timestamp (oldest first)\n      entries.sort((a, b) => a.value.compareTo(b.value));\n      \n      // Remove oldest entries\n      final entriesToRemove = entries.take(count);\n      for (final entry in entriesToRemove) {\n        await box.delete(entry.key);\n      }\n      \n      _logger.d('Removed ${entriesToRemove.length} oldest entries');\n    } catch (e) {\n      _logger.e('Error removing oldest entries: $e');\n    }\n  }\n\n  /// Get appropriate box for cache type\n  Box<String> _getBoxForType(CacheType type) {\n    switch (type) {\n      case CacheType.general:\n        return _cacheBox;\n      case CacheType.userData:\n        return _userDataBox;\n      case CacheType.transactions:\n        return _transactionCacheBox;\n      case CacheType.settings:\n        return _settingsBox;\n    }\n  }\n\n  /// Ensure cache service is initialized\n  Future<void> _ensureInitialized() async {\n    if (!_isInitialized) {\n      await initialize();\n    }\n  }\n\n  /// Close all boxes (call on app termination)\n  Future<void> dispose() async {\n    try {\n      await _cacheBox.close();\n      await _userDataBox.close();\n      await _transactionCacheBox.close();\n      await _settingsBox.close();\n      _logger.i('Cache service disposed');\n    } catch (e) {\n      _logger.e('Error disposing cache service: $e');\n    }\n  }\n}\n\n/// Cache entry model\nclass CacheEntry {\n  final dynamic data;\n  final int timestamp;\n  final int expirationTimestamp;\n\n  CacheEntry({\n    required this.data,\n    required this.timestamp,\n    required this.expirationTimestamp,\n  });\n\n  Map<String, dynamic> toJson() => {\n    'data': data,\n    'timestamp': timestamp,\n    'expirationTimestamp': expirationTimestamp,\n  };\n\n  factory CacheEntry.fromJson(Map<String, dynamic> json) => CacheEntry(\n    data: json['data'],\n    timestamp: json['timestamp'] as int,\n    expirationTimestamp: json['expirationTimestamp'] as int,\n  );\n}\n\n/// Cache type enumeration\nenum CacheType {\n  general,\n  userData,\n  transactions,\n  settings,\n}\n\n/// Cache statistics model\nclass CacheStats {\n  final int totalEntries;\n  final int generalCacheEntries;\n  final int userDataEntries;\n  final int transactionCacheEntries;\n  final int settingsEntries;\n  final int approximateSize;\n\n  CacheStats({\n    required this.totalEntries,\n    required this.generalCacheEntries,\n    required this.userDataEntries,\n    required this.transactionCacheEntries,\n    required this.settingsEntries,\n    required this.approximateSize,\n  });\n\n  factory CacheStats.empty() => CacheStats(\n    totalEntries: 0,\n    generalCacheEntries: 0,\n    userDataEntries: 0,\n    transactionCacheEntries: 0,\n    settingsEntries: 0,\n    approximateSize: 0,\n  );\n}
+// lib/core/services/cache_service.dart
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../errors/app_error.dart';
+
+enum CacheType {
+  userProfile,
+  transactions,
+  accounts,
+  loans,
+  settings,
+  apiResponse,
+  documents,
+  temporary,
+}
+
+class CacheItem<T> {
+  final String key;
+  final T data;
+  final DateTime createdAt;
+  final DateTime? expiresAt;
+  final CacheType type;
+
+  CacheItem({
+    required this.key,
+    required this.data,
+    required this.createdAt,
+    this.expiresAt,
+    required this.type,
+  });
+
+  bool get isExpired {
+    if (expiresAt == null) return false;
+    return DateTime.now().isAfter(expiresAt!);
+  }
+
+  Map<String, dynamic> toJson() => {
+        'key': key,
+        'data': data,
+        'createdAt': createdAt.toIso8601String(),
+        'expiresAt': expiresAt?.toIso8601String(),
+        'type': type.toString(),
+      };
+
+  factory CacheItem.fromJson(Map<String, dynamic> json) => CacheItem<T>(
+        key: json['key'],
+        data: json['data'],
+        createdAt: DateTime.parse(json['createdAt']),
+        expiresAt: json['expiresAt'] != null ? DateTime.parse(json['expiresAt']) : null,
+        type: CacheType.values.firstWhere(
+          (e) => e.toString() == json['type'],
+          orElse: () => CacheType.temporary,
+        ),
+      );
+}
+
+class CacheService {
+  static const String _boxPrefix = 'sacco_cache_';
+  static const Duration _defaultExpiration = Duration(hours: 24);
+  static const Duration _userDataExpiration = Duration(days: 7);
+  static const Duration _transactionExpiration = Duration(days: 30);
+  static const Duration _apiResponseExpiration = Duration(hours: 1);
+
+  late Box<String> _mainBox;
+  late Box<String> _userBox;
+  late Box<String> _transactionBox;
+  late Box<String> _settingsBox;
+  
+  bool _isInitialized = false;
+
+  /// Initialize the cache service
+  Future<void> initialize() async {
+    if (_isInitialized) return;
+
+    try {
+      if (!kIsWeb) {
+        final directory = await getApplicationDocumentsDirectory();
+        Hive.init(directory.path);
+      } else {
+        await Hive.initFlutter();
+      }
+
+      // Open different boxes for different data types
+      _mainBox = await Hive.openBox<String>('${_boxPrefix}main');
+      _userBox = await Hive.openBox<String>('${_boxPrefix}user');
+      _transactionBox = await Hive.openBox<String>('${_boxPrefix}transactions');
+      _settingsBox = await Hive.openBox<String>('${_boxPrefix}settings');
+
+      _isInitialized = true;
+
+      // Clean up expired items on initialization
+      await _cleanupExpiredItems();
+    } catch (e) {
+      throw AppError(
+        message: 'Failed to initialize cache service: ${e.toString()}',
+        userFriendlyMessage: 'Failed to initialize local storage',
+      );
+    }
+  }
+
+  /// Store data in cache
+  Future<void> store<T>({
+    required String key,
+    required T data,
+    CacheType type = CacheType.temporary,
+    Duration? expiration,
+  }) async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final Duration actualExpiration = expiration ?? _getDefaultExpiration(type);
+      final expiresAt = DateTime.now().add(actualExpiration);
+
+      final cacheItem = CacheItem<T>(
+        key: key,
+        data: data,
+        createdAt: DateTime.now(),
+        expiresAt: expiresAt,
+        type: type,
+      );
+
+      final box = _getBoxForType(type);
+      await box.put(key, jsonEncode(cacheItem.toJson()));
+
+      debugPrint('Cache: Stored $key (type: $type, expires: $expiresAt)');
+    } catch (e) {
+      throw AppError(
+        message: 'Failed to store cache item: ${e.toString()}',
+        userFriendlyMessage: 'Failed to save data locally',
+      );
+    }
+  }
+
+  /// Retrieve data from cache
+  Future<T?> retrieve<T>(String key, CacheType type) async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final box = _getBoxForType(type);
+      final jsonString = box.get(key);
+      
+      if (jsonString == null) return null;
+
+      final cacheItem = CacheItem<T>.fromJson(jsonDecode(jsonString));
+
+      // Check if item has expired
+      if (cacheItem.isExpired) {
+        await box.delete(key);
+        debugPrint('Cache: Removed expired item $key');
+        return null;
+      }
+
+      debugPrint('Cache: Retrieved $key (type: $type)');
+      return cacheItem.data;
+    } catch (e) {
+      debugPrint('Cache: Failed to retrieve $key: ${e.toString()}');
+      return null;
+    }
+  }
+
+  /// Check if key exists in cache and is not expired
+  Future<bool> exists(String key, CacheType type) async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final box = _getBoxForType(type);
+      final jsonString = box.get(key);
+      
+      if (jsonString == null) return false;
+
+      final cacheItem = CacheItem.fromJson(jsonDecode(jsonString));
+      
+      if (cacheItem.isExpired) {
+        await box.delete(key);
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Remove specific item from cache
+  Future<void> remove(String key, CacheType type) async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final box = _getBoxForType(type);
+      await box.delete(key);
+      debugPrint('Cache: Removed $key');
+    } catch (e) {
+      throw AppError(
+        message: 'Failed to remove cache item: ${e.toString()}',
+        userFriendlyMessage: 'Failed to remove cached data',
+      );
+    }
+  }
+
+  /// Clear all items of a specific type
+  Future<void> clearType(CacheType type) async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final box = _getBoxForType(type);
+      await box.clear();
+      debugPrint('Cache: Cleared all items of type $type');
+    } catch (e) {
+      throw AppError(
+        message: 'Failed to clear cache type: ${e.toString()}',
+        userFriendlyMessage: 'Failed to clear cached data',
+      );
+    }
+  }
+
+  /// Clear all cached data
+  Future<void> clearAll() async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      await Future.wait([
+        _mainBox.clear(),
+        _userBox.clear(),
+        _transactionBox.clear(),
+        _settingsBox.clear(),
+      ]);
+      debugPrint('Cache: Cleared all cached data');
+    } catch (e) {
+      throw AppError(
+        message: 'Failed to clear all cache: ${e.toString()}',
+        userFriendlyMessage: 'Failed to clear all cached data',
+      );
+    }
+  }
+
+  /// Get cache statistics
+  Future<Map<String, dynamic>> getStats() async {
+    if (!_isInitialized) await initialize();
+
+    try {
+      final mainCount = _mainBox.length;
+      final userCount = _userBox.length;
+      final transactionCount = _transactionBox.length;
+      final settingsCount = _settingsBox.length;
+
+      // Calculate total size (approximate)
+      int totalSize = 0;
+      for (final box in [_mainBox, _userBox, _transactionBox, _settingsBox]) {
+        for (final value in box.values) {
+          totalSize += value.length;
+        }
+      }
+
+      return {
+        'totalItems': mainCount + userCount + transactionCount + settingsCount,
+        'mainBoxItems': mainCount,
+        'userBoxItems': userCount,
+        'transactionBoxItems': transactionCount,
+        'settingsBoxItems': settingsCount,
+        'approximateSizeBytes': totalSize,
+        'approximateSizeMB': (totalSize / (1024 * 1024)).toStringAsFixed(2),
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// Clean up expired items
+  Future<void> _cleanupExpiredItems() async {
+    if (!_isInitialized) return;
+
+    try {
+      int removedCount = 0;
+      
+      for (final box in [_mainBox, _userBox, _transactionBox, _settingsBox]) {
+        final keysToRemove = <dynamic>[];
+        
+        for (final key in box.keys) {
+          final jsonString = box.get(key);
+          if (jsonString == null) continue;
+
+          try {
+            final cacheItem = CacheItem.fromJson(jsonDecode(jsonString));
+            if (cacheItem.isExpired) {
+              keysToRemove.add(key);
+            }
+          } catch (e) {
+            // If we can't parse the item, remove it
+            keysToRemove.add(key);
+          }
+        }
+
+        for (final key in keysToRemove) {
+          await box.delete(key);
+          removedCount++;
+        }
+      }
+
+      if (removedCount > 0) {
+        debugPrint('Cache: Cleaned up $removedCount expired items');
+      }
+    } catch (e) {
+      debugPrint('Cache: Error during cleanup: ${e.toString()}');
+    }
+  }
+
+  /// Get the appropriate box for the cache type
+  Box<String> _getBoxForType(CacheType type) {
+    switch (type) {
+      case CacheType.userProfile:
+      case CacheType.accounts:
+        return _userBox;
+      case CacheType.transactions:
+        return _transactionBox;
+      case CacheType.settings:
+        return _settingsBox;
+      case CacheType.loans:
+      case CacheType.apiResponse:
+      case CacheType.documents:
+      case CacheType.temporary:
+      default:
+        return _mainBox;
+    }
+  }
+
+  /// Get default expiration for cache type
+  Duration _getDefaultExpiration(CacheType type) {
+    switch (type) {
+      case CacheType.userProfile:
+      case CacheType.accounts:
+        return _userDataExpiration;
+      case CacheType.transactions:
+        return _transactionExpiration;
+      case CacheType.apiResponse:
+        return _apiResponseExpiration;
+      case CacheType.settings:
+        return const Duration(days: 30);
+      case CacheType.loans:
+        return const Duration(days: 7);
+      case CacheType.documents:
+        return const Duration(days: 90);
+      case CacheType.temporary:
+      default:
+        return _defaultExpiration;
+    }
+  }
+
+  /// Dispose of resources
+  Future<void> dispose() async {
+    if (!_isInitialized) return;
+
+    try {
+      await Future.wait([
+        _mainBox.close(),
+        _userBox.close(),
+        _transactionBox.close(),
+        _settingsBox.close(),
+      ]);
+      _isInitialized = false;
+      debugPrint('Cache: Service disposed');
+    } catch (e) {
+      debugPrint('Cache: Error disposing service: ${e.toString()}');
+    }
+  }
+
+  /// Utility method to cache API responses
+  Future<void> cacheApiResponse({
+    required String endpoint,
+    required Map<String, dynamic> response,
+    Duration? expiration,
+  }) async {
+    await store<Map<String, dynamic>>(
+      key: 'api_$endpoint',
+      data: response,
+      type: CacheType.apiResponse,
+      expiration: expiration ?? _apiResponseExpiration,
+    );
+  }
+
+  /// Utility method to retrieve cached API responses
+  Future<Map<String, dynamic>?> getCachedApiResponse(String endpoint) async {
+    return await retrieve<Map<String, dynamic>>('api_$endpoint', CacheType.apiResponse);
+  }
+}
