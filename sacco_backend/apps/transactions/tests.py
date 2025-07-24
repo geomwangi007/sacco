@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from apps.authentication.models import Role
 from apps.members.models import Member
-from apps.transactions.models import Transaction
+from apps.transactions.models import Transaction, TransactionFee
 from apps.transactions.services.transaction_service import TransactionService
 from apps.savings.models import SavingsAccount
 
@@ -60,6 +60,21 @@ class TransactionWorkflowTest(TestCase):
         # Link savings account to member
         self.member.savings_account = self.savings_account
         self.member.save()
+
+        # Create transaction fees for testing
+        TransactionFee.objects.create(
+            transaction_type='WITHDRAWAL',
+            payment_method='CASH',
+            fixed_amount=Decimal('1000'),
+            percentage=Decimal('0'),
+        )
+        
+        TransactionFee.objects.create(
+            transaction_type='DEPOSIT',
+            payment_method='CASH',
+            fixed_amount=Decimal('0'),
+            percentage=Decimal('0'),
+        )
 
         # Mock notification service
         self.notification_patcher = patch('apps.transactions.services.transaction_service.NotificationService')
@@ -118,20 +133,22 @@ class TransactionWorkflowTest(TestCase):
         self.assertEqual(transaction.amount, Decimal('30000'))
         self.assertEqual(transaction.status, 'COMPLETED')
 
-        # Check savings account was updated
+        # Check savings account was updated (amount + fee)
         self.savings_account.refresh_from_db()
-        self.assertEqual(self.savings_account.balance, Decimal('70000'))  # 100000 - 30000
+        self.assertEqual(self.savings_account.balance, Decimal('69000'))  # 100000 - 30000 - 1000 (fee)
 
         # Check notification was sent
         self.mock_notification_service.send_transaction_notification.assert_called_once()
 
     def test_withdrawal_exceeding_balance(self):
-        # Try to withdraw more than the available balance
+        # Try to withdraw more than the available balance (considering minimum balance and fees)
+        # Available balance = 100000 - 10000 (min balance) = 90000
+        # With 1000 fee, max withdrawal is 89000
         with self.assertRaises(ValueError):
             TransactionService.create_transaction(
                 member_id=self.member.id,
                 transaction_type='WITHDRAWAL',
-                amount=Decimal('95000'),  # Exceeds available balance after minimum balance
+                amount=Decimal('90000'),  # Exceeds available balance after minimum balance and fee
                 payment_method='CASH',
                 description='Invalid withdrawal'
             )

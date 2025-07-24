@@ -14,7 +14,8 @@ class SavingsTransactionService:
             account_id: int,
             transaction_type: str,
             amount: Decimal,
-            reference: str = None
+            reference: str = None,
+            description: str = None
     ) -> SavingsTransaction:
         account = SavingsAccount.objects.select_for_update().get(id=account_id)
 
@@ -33,7 +34,7 @@ class SavingsTransactionService:
             transaction_type=transaction_type,
             amount=amount,
             balance_after=new_balance,
-            reference=reference or f"{transaction_type}_{uuid.uuid4().hex[:8]}"
+            reference=reference or f"TXN_{transaction_type}_{uuid.uuid4().hex[:8]}"
         )
 
 

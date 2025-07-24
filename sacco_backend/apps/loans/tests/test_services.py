@@ -2,10 +2,11 @@
 import json
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from apps.authentication.models import Role
 from apps.loans.services.loan_service import LoanService
@@ -32,12 +33,11 @@ class LoanServiceTest(TestCase):
             national_id='TEST123'
         )
 
-        # Create member
+        # Create member (registered more than 90 days ago)
         self.member = Member.objects.create(
             user=self.user,
             member_number='M2024TEST001',
             is_verified=True,
-            registration_date=datetime(2023, 1, 1).date(),
             date_of_birth=datetime(1994, 1, 1).date(),
             monthly_income=Decimal('500000.00'),
             marital_status='SINGLE',
@@ -50,6 +50,9 @@ class LoanServiceTest(TestCase):
             membership_number='SACCOM2024TEST001',
             membership_type='INDIVIDUAL'
         )
+        # Update registration_date after creation to bypass auto_now_add
+        self.member.registration_date = date(2024, 1, 1)
+        self.member.save()
 
         # Create loan
         self.loan = Loan.objects.create(
@@ -74,8 +77,8 @@ class LoanServiceTest(TestCase):
             member=self.member,
             credit_score=700,
             risk_level='LOW',
-            last_assessment_date=datetime.now(),
-            next_assessment_date=datetime.now() + timedelta(days=30),
+            last_assessment_date=timezone.now(),
+            next_assessment_date=timezone.now() + timedelta(days=30),
             factors=json.dumps({
                 'income_stability': 'Stable',
                 'credit_history': 'Good',
@@ -113,7 +116,7 @@ class LoanServiceTest(TestCase):
         self.assertEqual(approved_loan.approved_by, approved_by)
 
         # Verify notification was sent
-        self.mock_notification_service.send_loan_approval_notification.assert_called_once_with(self.member)
+        self.mock_notification_service.send_loan_approval_notification_sync.assert_called_once_with(self.member)
 
     def test_loan_disbursement(self):
         # First approve the loan
@@ -131,7 +134,7 @@ class LoanServiceTest(TestCase):
         self.assertEqual(repayments.count(), 12)  # 12 monthly payments
 
         # Verify notification was sent
-        self.mock_notification_service.send_loan_disbursement_notification.assert_called_once_with(self.member)
+        self.mock_notification_service.send_loan_disbursement_notification_sync.assert_called_once_with(self.member)
 
     @patch('apps.loans.services.loan_service.Loan.objects.filter')
     @patch('apps.risk_management.models.RiskProfile.objects.filter')
@@ -146,23 +149,43 @@ class LoanServiceTest(TestCase):
         # Create a synchronous version of check_eligibility for testing
         with patch('apps.loans.services.loan_service.LoanService.check_eligibility',
                    new=self._mock_check_eligibility):
-            # Mock member with savings account
-            self.member.savings_account = MagicMock()
-            self.member.savings_account.balance = Decimal('200000')
+            # Create real savings account for member
+            from apps.savings.models import SavingsAccount
+            savings_account = SavingsAccount.objects.create(
+                member=self.member,
+                account_number='SAV2024000001',
+                account_type='REGULAR',
+                balance=Decimal('200000'),
+                interest_rate=Decimal('3.50'),
+                status='ACTIVE',
+                minimum_balance=Decimal('100')
+            )
+            self.member.savings_account = savings_account
+            self.member.save()
 
             # Check eligibility
             is_eligible, message = self._mock_check_eligibility(self.member)
 
             # Assertions
-            self.assertTrue(is_eligible)
+            self.assertTrue(is_eligible, f"Expected eligible but got: {message}")
             self.assertEqual(message, "Eligible for loan")
 
     @patch('apps.loans.services.loan_service.Loan.objects.filter')
     def test_check_eligibility_ineligible(self, mock_loan_filter):
         # Since we can't use async in TestCase, modify the test to be synchronous
-        # Mock an ineligible member (insufficient savings)
-        self.member.savings_account = MagicMock()
-        self.member.savings_account.balance = Decimal('50000')
+        # Create a savings account with insufficient balance
+        from apps.savings.models import SavingsAccount
+        savings_account = SavingsAccount.objects.create(
+            member=self.member,
+            account_number='SAV2024000002',
+            account_type='REGULAR',
+            balance=Decimal('50000'),  # Below minimum requirement
+            interest_rate=Decimal('3.50'),
+            status='ACTIVE',
+            minimum_balance=Decimal('100')
+        )
+        self.member.savings_account = savings_account
+        self.member.save()
 
         # Mock Loan.objects.filter().acount()
         mock_loan_filter.return_value.filter.return_value.count.return_value = 0
@@ -181,7 +204,7 @@ class LoanServiceTest(TestCase):
     def _mock_check_eligibility(self, member):
         """Synchronous version of check_eligibility for testing"""
         # Check membership duration
-        membership_duration = (datetime.now().date() - member.registration_date).days
+        membership_duration = (date.today() - member.registration_date).days
         if membership_duration < 90:  # 3 months minimum
             return False, "Minimum membership period not met (3 months required)"
 
@@ -192,12 +215,20 @@ class LoanServiceTest(TestCase):
             return False, "Has existing active loan"
 
         # Check minimum savings requirement
-        savings_balance = member.savings_account.balance
-        if savings_balance < Decimal('100000'):  # Minimum 100,000 UGX
-            return False, "Insufficient savings balance (min. 100,000 UGX)"
+        if hasattr(member, 'savings_account') and member.savings_account:
+            savings_balance = member.savings_account.balance
+            if savings_balance < Decimal('100000'):  # Minimum 100,000 UGX
+                return False, "Insufficient savings balance (min. 100,000 UGX)"
+        else:
+            return False, "No savings account found"
 
         # Check KYC status
         if not member.is_verified:
             return False, "KYC verification incomplete"
+
+        # Check risk profile (simplified for testing)
+        if hasattr(self, 'risk_profile') and self.risk_profile:
+            if self.risk_profile.credit_score < 600:
+                return False, "Credit score below minimum requirement"
 
         return True, "Eligible for loan"
