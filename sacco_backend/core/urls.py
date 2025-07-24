@@ -27,6 +27,9 @@ urlpatterns = [
     path('api/v1/', include('apps.risk_management.urls')),
     path('api/v1/', include('apps.ledger.urls')),
     path('api/v1/', include('apps.reporting.urls')),
+    path('api/v1/', include('apps.savings.urls')),
+    path('api/v1/', include('apps.transactions.urls')),
+    path('api/v1/', include('apps.notifications.urls')),
 ]
 
 if settings.DEBUG:
