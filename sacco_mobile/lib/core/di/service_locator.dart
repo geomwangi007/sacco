@@ -2,7 +2,9 @@
 import 'package:get_it/get_it.dart';
 import 'package:sacco_mobile/core/api/api_client.dart';
 import 'package:sacco_mobile/core/services/auth_service.dart';
-import 'package:sacco_mobile/core/services/secure_storage_service.dart';
+import 'package:sacco_mobile/core/storage/secure_storage_service.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:sacco_mobile/core/services/connectivity_service.dart';
 import 'package:sacco_mobile/features/auth/repositories/auth_repository.dart';
 import 'package:sacco_mobile/features/auth/viewmodels/login_viewmodel.dart';
@@ -23,9 +25,9 @@ final GetIt getIt = GetIt.instance;
 
 Future<void> setupServiceLocator() async {
   // Register core services as singletons
-  getIt.registerLazySingleton<ConnectivityService>(() => ConnectivityService());
+  getIt.registerLazySingleton<ConnectivityService>(() => ConnectivityService(Connectivity()));
   getIt.registerLazySingleton<SecureStorageService>(
-      () => SecureStorageService());
+      () => SecureStorageService(const FlutterSecureStorage()));
 
   // ApiClient now depends on ConnectivityService for network status
   getIt.registerLazySingleton<ApiClient>(() => ApiClient(
