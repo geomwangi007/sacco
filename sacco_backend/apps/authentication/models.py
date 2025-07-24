@@ -87,5 +87,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = 'email'
     objects = UserManager()
 
+    def get_full_name(self):
+        """Return the full name of the user"""
+        return f"{self.first_name} {self.last_name}".strip()
+
     class Meta:
         ordering = ['-date_joined']
