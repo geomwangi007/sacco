@@ -144,9 +144,10 @@ class TransactionService:
                 total_deduction = _transaction.amount + fee
                 savings_account = _transaction.member.savings_account
 
-                # Check balance
-                if savings_account.balance < total_deduction:
-                    raise ValueError("Insufficient funds including fees")
+                # Check balance (including minimum balance requirement)
+                available_balance = savings_account.balance - savings_account.minimum_balance
+                if available_balance < total_deduction:
+                    raise ValueError("Insufficient funds including fees and minimum balance requirement")
 
                 # Update savings account
                 savings_account.balance -= total_deduction
@@ -171,7 +172,7 @@ class TransactionService:
                 _transaction.save()
 
                 # Create ledger entries
-                LedgerService.cre_ate_withdrawal_entries(_transaction, fee)
+                LedgerService.create_withdrawal_entries(_transaction, fee)
 
                 return _transaction
 
