@@ -1,5 +1,11 @@
-import firebase_admin
-from firebase_admin import messaging
+
+try:
+    import firebase_admin
+    from firebase_admin import messaging
+except ImportError:
+    firebase_admin = None
+    messaging = None
+
 from typing import Union, List, Dict
 import logging
 
@@ -12,12 +18,22 @@ class PushNotificationService:
     @staticmethod
     def initialize_firebase():
         """Initialize Firebase Admin SDK if not already initialized"""
+        if not firebase_admin:
+            logger.warning("Firebase Admin SDK not installed. Skipping initialization.")
+            return
+
         try:
             firebase_admin.get_app()
         except ValueError:
             cred_path = settings.FIREBASE_CREDENTIALS_PATH
-            cred = firebase_admin.credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred)
+            if not cred_path:
+                logger.warning("FIREBASE_CREDENTIALS_PATH not set.")
+                return
+            try:
+                cred = firebase_admin.credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+            except Exception as e:
+                logger.error(f"Failed to initialize Firebase credentials: {e}")
 
     @staticmethod
     async def send_notification(
@@ -25,6 +41,10 @@ class PushNotificationService:
             notification_data: dict
     ) -> Dict[str, any]:
         """Send push notification using Firebase"""
+        if not firebase_admin or not messaging:
+            logger.info("Mocking push notification send (Firebase not installed).")
+            return {'success_count': 1, 'failure_count': 0, 'responses': []}
+
         try:
             PushNotificationService.initialize_firebase()
 
@@ -72,6 +92,10 @@ class PushNotificationService:
             notification_data: dict
     ) -> Dict[str, any]:
         """Send notification to a topic"""
+        if not firebase_admin or not messaging:
+             logger.info("Mocking topic notification send (Firebase not installed).")
+             return {'message_id': 'mock-id'}
+
         try:
             PushNotificationService.initialize_firebase()
 

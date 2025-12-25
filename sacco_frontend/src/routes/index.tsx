@@ -18,8 +18,8 @@ import Dashboard from "@/pages/dashboard/Dashboard";
 
 // Member Pages
 import MembersList from "@/pages/members/MembersList";
-// import MemberProfile from '@/pages/members/MemberProfile';
-// import AddMember from '@/pages/members/AddMember';
+import MemberProfile from '@/pages/members/MemberProfile';
+import AddMember from '@/pages/members/AddMember';
 
 // Loan Pages
 import LoansList from "@/pages/loans/LoansList";
@@ -27,12 +27,12 @@ import LoanDetails from "@/pages/loans/LoanDetails";
 import ApplyLoan from "@/pages/loans/ApplyLoan";
 
 // Savings Pages
-// import SavingsAccounts from '@/pages/savings/SavingsAccounts';
+import SavingsAccounts from '@/pages/savings/SavingsAccounts';
 // import AccountDetails from '@/pages/savings/AccountDetails';
 // import MakeTransaction from '@/pages/savings/MakeTransaction';
 
 // Transaction Pages
-// import TransactionHistory from '@/pages/transactions/TransactionHistory';
+import TransactionHistory from '@/pages/transactions/TransactionHistory';
 
 const AppRoutes: React.FC = () => {
   return (
@@ -92,8 +92,8 @@ const AppRoutes: React.FC = () => {
 
         {/* Member Routes */}
         <Route path="/members" element={<MembersList />} />
-        {/* <Route path="/members/add" element={<AddMember />} /> */}
-        {/* <Route path="/members/:id" element={<MemberProfile />} /> */}
+        <Route path="/members/add" element={<AddMember />} />
+        <Route path="/members/:id" element={<MemberProfile />} />
 
         {/* Loan Routes */}
         <Route path="/loans" element={<LoansList />} />
@@ -101,12 +101,12 @@ const AppRoutes: React.FC = () => {
         <Route path="/loans/:id" element={<LoanDetails />} />
 
         {/* Savings Routes */}
-        {/* <Route path="/savings" element={<SavingsAccounts />} /> */}
+        <Route path="/savings" element={<SavingsAccounts />} />
         {/* <Route path="/savings/:id" element={<AccountDetails />} /> */}
         {/* <Route path="/savings/:id/transaction" element={<MakeTransaction />} /> */}
 
         {/* Transaction Routes */}
-        {/* <Route path="/transactions" element={<TransactionHistory />} /> */}
+        <Route path="/transactions" element={<TransactionHistory />} />
 
         {/* Add placeholder routes for other sections used in the sidebar */}
         <Route path="/reports" element={<ComingSoon title="Reports" />} />
@@ -127,17 +127,17 @@ const AppRoutes: React.FC = () => {
 // Temporary component for routes that haven't been implemented yet
 const ComingSoon: React.FC<{ title: string }> = ({ title }) => {
   return (
-    <div style={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      alignItems: 'center', 
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
       justifyContent: 'center',
       height: '70vh',
       textAlign: 'center'
     }}>
       <h2 style={{ color: '#1e5631', marginBottom: '16px' }}>{title}</h2>
       <p style={{ color: '#666', fontSize: '18px' }}>This feature is coming soon!</p>
-      <div style={{ 
+      <div style={{
         marginTop: '24px',
         padding: '16px 32px',
         backgroundColor: 'rgba(30, 86, 49, 0.1)',

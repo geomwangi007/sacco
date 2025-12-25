@@ -142,3 +142,7 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Authentication Security
+MAX_LOGIN_ATTEMPTS = 5
+ACCOUNT_LOCK_MINUTES = 15
